@@ -4,6 +4,7 @@
 #include <EEPROM.h>
 #include <Wire.h>
 #include <SHT31.h>
+#include <PID_v1.h>
 
 #define DEBOUNCE 5             // 0 is fine for most fans, crappy fans may require 10 or 20 to filter out noise
 #define FANSTUCK_THRESHOLD 500 // if no interrupts were received for 500ms, consider the fan as stuck and report 0 RPM
@@ -11,6 +12,9 @@
 #define FAN2_PWM 10
 #define FAN1_TACHO 2
 #define FAN2_TACHO 3
+#define MIN_FAN_SPD 0.5
+
+#define HEATER_PIN 12
 
 #define HX711_1_DaT 5
 #define HX711_1_SCK 4
@@ -29,17 +33,24 @@ SHT31 sht(SHT_ADDR, &Wire);
 
 int time = 0;
 
-float duty = 0.7;
 const int calVal_eepromAdress_1 = 0;
 const int calVal_eepromAdress_2 = 16;
 
-/*
+double heater_setpoint, heater_input, heater_output;
+double heater_p = 1;
+double heater_i = 1;
+double heater_d = 1;
 
-TODO:
-- RPM-Measuring doesn't work
+PID heaterController(&heater_input, &heater_output, &heater_setpoint, heater_p, heater_i, heater_d, DIRECT);
 
+double fan_setpoint, fan_input, fan_output;
+double fan_p = 1;
+double fan_i = 1;
+double fan_d = 1;
+double fan_duty;
+double temp_diff;
 
-*/
+PID fanController(&fan_input, &fan_output, &fan_setpoint, fan_p, fan_i, fan_d, REVERSE);
 
 unsigned long volatile ts1a = 0, ts1b = 0, ts2a = 0, ts2b = 0;
 
@@ -199,6 +210,16 @@ void calibrate()
   Serial.println("***");
 }
 
+void setup_heater()
+{
+  pinMode(HEATER_PIN, OUTPUT);
+
+  heater_input = 0;
+  heater_setpoint = 90;
+
+  heaterController.SetMode(AUTOMATIC);
+}
+
 void setup_fans()
 {
   pinMode(FAN1_PWM, OUTPUT);
@@ -215,6 +236,12 @@ void setup_fans()
 
   attachInterrupt(digitalPinToInterrupt(FAN1_TACHO), tachISR_1, RISING);
   attachInterrupt(digitalPinToInterrupt(FAN2_TACHO), tachISR_2, RISING);
+
+  fan_input = temp_diff;
+  fan_setpoint = 0;
+
+  fanController.SetMode(AUTOMATIC);
+  fanController.SetOutputLimits(MIN_FAN_SPD * 255, 255);
 }
 
 void setup_scales()
@@ -238,7 +265,7 @@ void setup_scales()
   {
     float cal = 0;
     EEPROM.get(calVal_eepromAdress_1, cal);
-    Serial.print("[HX711_1] Calibration value loaded from EEPROM");
+    Serial.print("[HX711_1] Calibration value loaded from EEPROM: ");
     Serial.println(cal);
     hx_1.setCalFactor(cal); // user set calibration value (float), initial value 1.0 may be used for this sketch
     Serial.println("[HX711_1] Startup complete");
@@ -256,7 +283,7 @@ void setup_scales()
   {
     float cal = 0;
     EEPROM.get(calVal_eepromAdress_1, cal);
-    Serial.print("[HX711_1] Calibration value loaded from EEPROM");
+    Serial.print("[HX711_1] Calibration value loaded from EEPROM: ");
     Serial.println(cal);
     hx_2.setCalFactor(cal); // user set calibration value (float), initial value 1.0 may be used for this sketch
     Serial.println("[HX711_2] Startup complete");
@@ -284,7 +311,9 @@ void setup()
 
   setup_fans();
 
-  setup_scales();
+  // setup_scales();
+
+  setup_heater();
 
   Wire.begin();
   Wire.setClock(100000);
@@ -293,16 +322,22 @@ void setup()
 
   Serial.println("----");
 
-  Serial.println("time;scale;pwm;rpm1;rpm2;temp1;hum2;temp2;hum2;temp3;hum3;temp4;hum4;tempdiff;avgtemp;");
+  // Serial.println("time;scale;fan_pwm;rpm1;rpm2;temp1;hum2;temp2;hum2;temp3;hum3;temp4;hum4;tempdiff;avgtemp;heater;");
+  Serial.println("time;fan_pwm;rpm1;rpm2;temp1;hum2;temp2;hum2;temp3;hum3;temp4;hum4;tempdiff;avgtemp;heater;");
 }
 
 void loop_fans()
 {
-  setPWM1A(duty);
-  setPWM1B(duty);
+
+  fanController.Compute();
+  // fan_duty = MIN_FAN_SPD + fan_output / (255 / MIN_FAN_SPD);
+  fan_duty = fan_output;
+
+  setPWM1A(fan_duty);
+  setPWM1B(fan_duty);
 
   // Serial.print("PWM: ");
-  Serial.print(duty);
+  Serial.print(fan_duty);
   Serial.print(";");
 
   // Serial.print("RPM: ");
@@ -328,13 +363,7 @@ void loop_scales()
     float i_1 = hx_1.getData();
     float i_2 = hx_2.getData();
     float i_g = i_1 + i_2;
-    // Serial.print("Scale: ");
     Serial.print(i_g);
-    // Serial.print("(");
-    // Serial.print(i_1);
-    // Serial.print(", ");
-    // Serial.print(i_2);
-    // Serial.println(")");
     Serial.print(";");
 
     newDataReady = 0;
@@ -370,7 +399,7 @@ void loop()
   Serial.print(time);
   Serial.print(";");
 
-  loop_scales();
+  // loop_scales();
 
   loop_fans();
 
@@ -432,32 +461,30 @@ void loop()
     // sht.reset();
   }
 
-  float temp_diff = temp_max - temp_min;
+  temp_diff = temp_max - temp_min;
   float avg_temp = temp_total / 4;
   Serial.print(temp_diff);
   Serial.print(";");
   Serial.print(avg_temp);
   Serial.print(";");
 
-  Serial.println("");
-  // Serial.println("----");
+  heater_input = avg_temp * 0.5 + temp_max * 0.5;
+  heaterController.Compute();
+  analogWrite(HEATER_PIN, heater_output);
+  Serial.print(heater_output);
+  Serial.print(";");
 
-  if (temp_diff > 1)
-  {
-    duty = 0.85;
-  }
-  else if (temp_diff > 2)
-  {
-    duty = 1;
-  }
-  else
-  {
-    duty = 0.7;
-  }
+  Serial.println("");
 
   if (temp_max > 95)
   {
     Serial.println("===== OVERTEMP ===== OVERTEMP ===== OVERTEMP ===== OVERTEMP =====");
+    // shit pants and turn off heater
+  }
+  else
+  {
+    // resume normal operation
+    // TODO
   }
 
   delay(CLOCK_TIME);
