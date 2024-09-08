@@ -455,5 +455,10 @@ void loop()
     duty = 0.7;
   }
 
+  if (temp_max > 95)
+  {
+    Serial.println("===== OVERTEMP ===== OVERTEMP ===== OVERTEMP ===== OVERTEMP =====");
+  }
+
   delay(CLOCK_TIME);
 }
