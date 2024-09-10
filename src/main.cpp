@@ -37,16 +37,16 @@ const int calVal_eepromAdress_1 = 0;
 const int calVal_eepromAdress_2 = 16;
 
 double heater_setpoint, heater_input, heater_output;
-double heater_p = 1;
+double heater_p = 2;
 double heater_i = 1;
-double heater_d = 1;
+double heater_d = 2;
 
 PID heaterController(&heater_input, &heater_output, &heater_setpoint, heater_p, heater_i, heater_d, DIRECT);
 
 double fan_setpoint, fan_input, fan_output;
-double fan_p = 1;
+double fan_p = 2;
 double fan_i = 1;
-double fan_d = 1;
+double fan_d = 2;
 double fan_duty;
 double temp_diff;
 
@@ -480,11 +480,11 @@ void loop()
   {
     Serial.println("===== OVERTEMP ===== OVERTEMP ===== OVERTEMP ===== OVERTEMP =====");
     // shit pants and turn off heater
+    heaterController.SetMode(MANUAL);
   }
   else
   {
-    // resume normal operation
-    // TODO
+    heaterController.SetMode(AUTOMATIC);
   }
 
   delay(CLOCK_TIME);
